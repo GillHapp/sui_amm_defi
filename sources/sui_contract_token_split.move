@@ -102,62 +102,124 @@ public entry fun mint(
         transfer::public_share_object(pool);
     }
 
-    public entry fun provide_liquidity(
-        pool: &mut LiquidityPool,
-        mut sui: Coin<SUI>,
-        mut happy: Coin<SUI_CONTRACT_TOKEN_SPLIT>,
-        value: u64,
-        tokenVault: &mut LiquidityTokenVault,
-        ctx: &mut TxContext
-    ) {
-        let sui_balance = coin::value(&sui);
-        let happy_balance = coin::value(&happy);
-        
-        // Calculate required HAPPY based on 1:200 ratio
-        let happy_required = value * 200;
-        
-        // Validate balances and ratio
-        assert!(sui_balance >= value, E_INSUFFICIENT_BALANCE);
-        assert!(happy_balance >= happy_required, E_INSUFFICIENT_BALANCE);
+ public entry fun provide_liquidity(
+    pool: &mut LiquidityPool,
+    mut sui: Coin<SUI>,
+    mut happy: Coin<SUI_CONTRACT_TOKEN_SPLIT>,
+    value: u64,
+    tokenVault: &mut LiquidityTokenVault,
+    ctx: &mut TxContext
+) {
+    let sui_balance = coin::value(&sui);
+    let happy_balance = coin::value(&happy);
 
-        // Split and add liquidity to pool
-        let sui_for_pool = coin::split(&mut sui, value, ctx);
-        let happy_for_pool = coin::split(&mut happy, happy_required, ctx);
-        
-        coin::join(&mut pool.sui_reserve, sui_for_pool);
-        coin::join(&mut pool.happy_reserve, happy_for_pool);
+    let happy_required = value * 200;
 
-        // update the pool with LP provider native and custom token in LPProvider 
-        let lp_provider = LPProvider {
-            id: object::new(ctx),
-            provider: sender(ctx),
-            sui_amount: value,
-            happy_amount: happy_required,
-        };
-        // share the LP provider object
-        transfer::public_share_object(lp_provider);
+    assert!(sui_balance >= value, E_INSUFFICIENT_BALANCE);
+    assert!(happy_balance >= happy_required, E_INSUFFICIENT_BALANCE);
 
-    // calcaulate tokal sui native token in in the pool 
-    let total_sui = coin::value(&pool.sui_reserve);
-    // calculate the sender native token in the pool
-    let sui_for_pool1 = coin::split(&mut sui, value, ctx);
+    // 🔍 Check pool state BEFORE adding liquidity
+    let is_first_provider = coin::value(&pool.sui_reserve) == 0;
 
-    let sender_sui = coin::value(&sui_for_pool1);
-    // calcualte the percentage of the sender token in the pool
-    // convert the percecnte to the round number this (sender_sui * 100) / total_sui; into round number 
-    let sender_percentage = (sender_sui * 100) / total_sui;
-    // get the LP token from the pool and calculate the equivalent LP token for the sender
-    let lp_token = coin::split(&mut tokenVault.lp_tokens, sender_percentage, ctx);
-    // transfer the LP token to the sender
-    public_transfer(lp_token, sender(ctx));
+    // Split exact coins to deposit
+    let sui_for_pool = coin::split(&mut sui, value, ctx);
+    let happy_for_pool = coin::split(&mut happy, happy_required, ctx);
+
+    // Add to pool
+    coin::join(&mut pool.sui_reserve, sui_for_pool);
+    coin::join(&mut pool.happy_reserve, happy_for_pool);
+
+    // Track LP provider
+    let lp_provider = LPProvider {
+        id: object::new(ctx),
+        provider: sender(ctx),
+        sui_amount: value,
+        happy_amount: happy_required,
+    };
+    transfer::public_share_object(lp_provider);
+
+    // 💰 Only mint LP tokens if not the first provider
+    if (!is_first_provider) {
+        let total_sui = coin::value(&pool.sui_reserve);
+
+        // sender percentage = (value * 1_000_000_000) / total_sui
+        let share_ratio = (value * 1_000_000_000) / total_sui;
+
+        let lp_token = coin::split(&mut tokenVault.lp_tokens, share_ratio, ctx);
+        public_transfer(lp_token, sender(ctx));
+    };
+
+    // Return remaining user tokens
+    public_transfer(sui, sender(ctx));
+    public_transfer(happy, sender(ctx));
+}
+
+
+//     public entry fun provide_liquidity(
+//     pool: &mut LiquidityPool,
+//     mut sui: Coin<SUI>,
+//     mut happy: Coin<SUI_CONTRACT_TOKEN_SPLIT>,
+//     value: u64,
+//     tokenVault: &mut LiquidityTokenVault,
+//     lp_cap: &mut LPMinterCap,
+//     ctx: &mut TxContext
+// ) {
+//     let sui_balance = coin::value(&sui);
+//     let happy_balance = coin::value(&happy);
     
-    // Join sui_for_pool1 back to the pool
-    coin::join(&mut pool.sui_reserve, sui_for_pool1);
+//     // Calculate required HAPPY based on 1:200 ratio
+//     let happy_required = value * 200;
+    
+//     // Validate balances and ratio
+//     assert!(sui_balance >= value, E_INSUFFICIENT_BALANCE);
+//     assert!(happy_balance >= happy_required, E_INSUFFICIENT_BALANCE);
 
-    // Return leftover tokens
-        public_transfer(sui, sender(ctx));
-        public_transfer(happy, sender(ctx));
-    }
+//     // Split and add liquidity to pool
+//     let sui_for_pool = coin::split(&mut sui, value, ctx);
+//     let happy_for_pool = coin::split(&mut happy, happy_required, ctx);
+
+//     // Get reserves before adding liquidity
+//     let total_sui_before = coin::value(&pool.sui_reserve);
+    
+//     coin::join(&mut pool.sui_reserve, sui_for_pool);
+//     coin::join(&mut pool.happy_reserve, happy_for_pool);
+
+//     // Check if first provider
+//     if (total_sui_before == 0) {
+//         // First provider - initialize LP tokens but don't send
+//         let initial_lp = ((value as u128) * (happy_required as u128)).sqrt() as u64;
+//         let lp_tokens = coin::mint(&mut lp_cap.treasury_cap, initial_lp, ctx);
+//         coin::join(&mut tokenVault.lp_tokens, lp_tokens);
+//     } else {
+//         // Subsequent providers - calculate share
+//         let total_sui_after = coin::value(&pool.sui_reserve);
+//         let contribution_ratio = (value * 1_000_000_000) / total_sui_after;
+//         let lp_to_mint = (contribution_ratio * coin::value(&tokenVault.lp_tokens)) / 1_000_000_000;
+        
+//         // Mint and send LP tokens
+//         let lp_tokens = coin::mint(&mut lp_cap.treasury_cap, lp_to_mint, ctx);
+//         public_transfer(lp_tokens, sender(ctx));
+//     }
+
+//     // Update LP provider tracking
+//     let provider_addr = sender(ctx);
+//     if (!exists<LPProvider>(provider_addr)) {
+//         transfer::public_transfer(LPProvider {
+//             id: object::new(ctx),
+//             provider: provider_addr,
+//             sui_amount: value,
+//             happy_amount: happy_required
+//         }, provider_addr);
+//     } else {
+//         let provider = borrow_global_mut<LPProvider>(provider_addr);
+//         provider.sui_amount = provider.sui_amount + value;
+//         provider.happy_amount = provider.happy_amount + happy_required;
+//     }
+
+//     // Return leftover tokens
+//     public_transfer(sui, provider_addr);
+//     public_transfer(happy, provider_addr);
+// }
 
 // public entry fun provide_liquidity(
 //     mut sui: Coin<SUI>,
