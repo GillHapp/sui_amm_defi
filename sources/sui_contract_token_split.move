@@ -10,6 +10,8 @@ use sui::transfer::{public_transfer};
 use sui::tx_context::{TxContext, sender};
 use sui::sui::SUI;
 use sui::sui;
+use sui::table::Table;
+use sui::table;
 
 
 const E_INSUFFICIENT_BALANCE: u64 = 0;
@@ -22,6 +24,23 @@ public struct LiquidityTokenVault has key, store {
     id: UID,
     lp_tokens: Coin<LP_TOKEN>,
 }
+
+// mapping to track the address of the provider and the amount of SUI and HAPPY tokens they provided
+public struct BalanceUser has key , store {
+    id: UID,
+    balance: Table<address, u64>,
+}
+
+// instize the mapping of the user and the amount of SUI and HAPPY tokens they provided it should be empty at the beginning
+public entry fun init_user_balance(ctx: &mut TxContext) {
+    let user_balance = BalanceUser {
+        id: object::new(ctx),
+        // zero address in table and zero value for initialization and also after that public share the object
+        balance: table::new<address, u64>(ctx),
+    };
+    transfer::public_share_object(user_balance);
+}
+
 
 public struct LPProvider has key, store {
     id: UID,
@@ -106,6 +125,7 @@ public entry fun mint(
     mut happy: Coin<SUI_CONTRACT_TOKEN_SPLIT>,
     value: u64,
     tokenVault: &mut LiquidityTokenVault,
+    user_balance: &mut BalanceUser,
     ctx: &mut TxContext
 ) {
 
@@ -148,6 +168,16 @@ public entry fun mint(
         public_transfer(lp_token, sender(ctx));
     };
 
+    // update the mapping of the user and the amount of SUI and HAPPY tokens they provided
+if (table::contains(&user_balance.balance, sender(ctx))) {
+    let current_balance = *table::borrow(&user_balance.balance, sender(ctx));
+    let new_balance = current_balance + value;
+    table::remove(&mut user_balance.balance, sender(ctx));
+    table::add(&mut user_balance.balance, sender(ctx), new_balance);
+} else {
+    table::add(&mut user_balance.balance, sender(ctx), value);
+};
+
     // Return remaining user tokens
     public_transfer(sui, sender(ctx));
     public_transfer(happy, sender(ctx));
@@ -158,6 +188,7 @@ public entry fun redeem(
     pool: &mut LiquidityPool,
     tokenVault: &mut LiquidityTokenVault,
     mut user_lp_token: Coin<LP_TOKEN>,
+    user_balance: &mut BalanceUser,
     lp_token_amount: u64,
     ctx: &mut TxContext,
 ) {
@@ -171,9 +202,17 @@ public entry fun redeem(
         abort E_DIVISION_BY_ZERO;
     };
 
+    // get the user balance of the SUI and HAPPY tokens they provided from the mapping
+    let sui_amount = *table::borrow(&user_balance.balance, sender(ctx));
+    if (sui_amount == 0) {
+        abort E_INSUFFICIENT_BALANCE;
+    };
+   // calculalate equivalent HAPPY tokens to redeem 
+   let happy_amount = sui_amount * 200;
+
     // Calculate the user's share of the pool
-    let sui_amount = (lp_token_amount * total_sui) / total_lp_supply;
-    let happy_amount = (lp_token_amount * total_happy) / total_lp_supply;
+    // let sui_amount = (lp_token_amount * total_sui) / total_lp_supply;
+    // let happy_amount = (lp_token_amount * total_happy) / total_lp_supply;
 
     // Check if the pool has enough reserves
     if (sui_amount > total_sui || happy_amount > total_happy) {
